@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Panel</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: #1a1a2e;
+            color: white;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; position: relative; }
+        h1, h2 { margin: 20px 0; color: #00f5d4; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #334155; }
+        th { color: #00bbf9; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        .btn-present { background: #00f5d4; color: #0f172a; }
+        .btn-absent { background: #ff6b6b; color: white; }
+        .btn-cancel { background: #64748b; color: white; }
+        .btn-approve { background: #10b981; color: white; }
+        .btn-reject { background: #f15bb5; color: white; }
+        .status-present { color: #00f5d4; }
+        .status-absent { color: #ff6b6b; }
+        .status-not-marked { color: #64748b; }
+        .status-pending { color: #f15bb5; font-weight: bold; }
+        .schedule-form { margin-top: 30px; }
+        .date-row { display: flex; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+        .date-label { width: 180px; font-weight: bold; color: #00f5d4; }
+        .checkbox-group { display: flex; flex-wrap: wrap; gap: 10px; }
+        input[type="checkbox"] { margin-right: 5px; }
+        button.save-btn,
+        a.save-btn {
+            background: linear-gradient(90deg, #00f5d4, #00bbf9);
+            color: #0f172a;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 10px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        a { color: #00bbf9; text-decoration: none; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .theme-toggle {
+            background: rgba(0, 245, 212, 0.15);
+            color: #00f5d4;
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            position: absolute;
+            top: 20px;
+            right: 20px;
+        }
+        .report-card {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 16px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Кнопка переключения темы -->
+        <button class="theme-toggle" id="themeToggle">🌓</button>
+
+        <div class="top-bar">
+            <h1>Admin Panel: English Class</h1>
+            <div>
+                <a href="/admin/reports" style="margin-right: 15px;">📊 Weekly Report</a>
+                <a href="/">← Back to Site</a>
+            </div>
+        </div>
+
+        <!-- СЕГОДНЯШНИЕ ЗАПИСИ -->
+        {% if today_bookings %}
+        <div class="report-card" style="background: rgba(0, 245, 212, 0.08); border: 1px solid #00f5d4;">
+            <h2 style="color: #00f5d4; margin-top: 0;">📅 Today's Sessions — {{ today }}</h2>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #334155;">Time</th>
+                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #334155;">Name</th>
+                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #334155;">Phone</th>
+                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #334155;">Status</th>
+                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #334155;">Attendance</th>
+                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #334155;">Mark</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for b in today_bookings %}
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #334155;">{{ b[3] }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #334155;">{{ b[1] }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #334155;">{{ b[2] }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #334155;">
+                            {% if b[4] == 'confirmed' %}
+                                <span style="color: #00f5d4;">Confirmed</span>
+                            {% elif b[4] == 'pending_cancellation' %}
+                                <span style="color: #f15bb5; font-weight: bold;">Cancellation Requested</span>
+                            {% else %}
+                                {{ b[4] }}
+                            {% endif %}
+                        </td>
+                        <td style="padding: 10px; border-bottom: 1px solid #334155;">
+                            {% if b[5] == 1 %}
+                                <span style="color: #00f5d4;">Present</span>
+                            {% elif b[5] == 0 %}
+                                <span style="color: #ff6b6b;">Absent</span>
+                            {% else %}
+                                <span style="color: #64748b;">Not marked</span>
+                            {% endif %}
+                        </td>
+                        <td style="padding: 10px; border-bottom: 1px solid #334155;">
+                            {% if b[5] is none %}
+                            <form method="post" action="/admin/set_attendance/{{ b[0] }}/1" style="display:inline;">
+                                <button type="submit" class="btn btn-present" style="padding: 4px 8px; font-size: 12px;">✓</button>
+                            </form>
+                            <form method="post" action="/admin/set_attendance/{{ b[0] }}/0" style="display:inline;">
+                                <button type="submit" class="btn btn-absent" style="padding: 4px 8px; font-size: 12px;">✗</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="report-card" style="background: rgba(100, 116, 139, 0.15); border: 1px dashed #64748b;">
+            <h2 style="color: #64748b; margin-top: 0;">📅 No sessions scheduled for today — {{ today }}</h2>
+        </div>
+        {% endif %}
+
+        <!-- ВСЕ ЗАПИСИ -->
+        <h2>All Bookings (Current Week)</h2>
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>Phone</th>
+                <th>Date</th>
+                <th>Time</th>
+                <th>Status</th>
+                <th>Attendance</th>
+                <th>Actions</th>
+            </tr>
+            {% for b in bookings %}
+            <tr>
+                <td>{{ b[1] }}</td>
+                <td>{{ b[2] }}</td>
+                <td>{{ b[3] }}</td>
+                <td>{{ b[4] }}</td>
+                <td>
+                    {% if b[5] == 'confirmed' %}
+                        <span>Confirmed</span>
+                    {% elif b[5] == 'cancelled' %}
+                        <span style="color: #64748b;">Cancelled</span>
+                    {% elif b[5] == 'pending_cancellation' %}
+                        <span class="status-pending">Cancellation Requested</span>
+                    {% else %}
+                        {{ b[5] }}
+                    {% endif %}
+                </td>
+                <td>
+                    {% if b[6] == 1 %}
+                        <span class="status-present">Present</span>
+                    {% elif b[6] == 0 %}
+                        <span class="status-absent">Absent</span>
+                    {% else %}
+                        <span class="status-not-marked">Not marked</span>
+                    {% endif %}
+                </td>
+                <td class="actions">
+                    {% if b[5] == 'confirmed' %}
+                        <form method="post" action="/admin/set_attendance/{{ b[0] }}/1" style="display:inline;">
+                            <button type="submit" class="btn btn-present">✓ Present</button>
+                        </form>
+                        <form method="post" action="/admin/set_attendance/{{ b[0] }}/0" style="display:inline;">
+                            <button type="submit" class="btn btn-absent">✗ Absent</button>
+                        </form>
+                        <form method="post" action="/admin/cancel/{{ b[0] }}" style="display:inline;">
+                            <button type="submit" class="btn btn-cancel">Cancel Now</button>
+                        </form>
+                    {% elif b[5] == 'pending_cancellation' %}
+                        <form method="post" action="/admin/approve_cancel/{{ b[0] }}" style="display:inline;">
+                            <button type="submit" class="btn btn-approve">✅ Approve</button>
+                        </form>
+                        <form method="post" action="/admin/reject_cancel/{{ b[0] }}" style="display:inline;">
+                            <button type="submit" class="btn btn-reject">❌ Reject</button>
+                        </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+
+        <!-- УПРАВЛЕНИЕ РАСПИСАНИЕМ -->
+        <h2>Manage Schedule (Current Week)</h2>
+        <form method="POST" action="/admin/update_schedule">
+            {% for item in schedule_data %}
+            <div class="date-row">
+                <div class="date-label">{{ item.date.strftime('%A, %b %d') }}</div>
+                <label>
+                    <input type="checkbox" name="disable_{{ item.date }}" {% if item.full_disabled %}checked{% endif %}>
+                    Disable full day
+                </label>
+                {% if not item.full_disabled %}
+                <div class="checkbox-group">
+                    {% for slot in slots %}
+                    <label>
+                        <input type="checkbox" name="disable_{{ item.date }}_{{ slot }}" 
+                               {% if slot in item.disabled_slots %}checked{% endif %}>
+                        {{ slot }}
+                    </label>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+            <button type="submit" class="save-btn">Save Schedule</button>
+        </form>
+
+        <!-- ЭКСПОРТ -->
+        <div style="margin-top: 30px;">
+            <a href="/admin/export_excel" class="save-btn">📥 Export to Excel</a>
+        </div>
+    </div>
+
+    <!-- Подключаем универсальный JS -->
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+</body>
+</html>

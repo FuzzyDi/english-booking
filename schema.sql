@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS bookings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    date DATE NOT NULL,
+    time_slot TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'confirmed',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS availability_override (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE NOT NULL,
+    time_slot TEXT  -- NULL = весь день отключён
+);

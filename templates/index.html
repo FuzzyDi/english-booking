@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>English Class Booking</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <!-- Кнопка переключения темы -->
+    <button class="theme-toggle" id="themeToggle">🌓</button>
+
+    <!-- Навигация -->
+    <a href="/my-bookings" class="bookings-link">My Bookings</a>
+    <a href="/admin" class="admin-link">Admin</a>
+
+    <div class="container">
+        <h1>Claim Your English Slot</h1>
+        <p class="subtitle">Only 3 sessions per week. Book fast!</p>
+
+        <div class="week-grid-wrapper">
+            <div class="week-grid">
+                {% for day in days %}
+                <div class="day-card">
+                    <div class="day-header">{{ day.formatted }}</div>
+                    {% for slot in day.slots %}
+                    <div 
+                        class="slot {% if slot.available %}available{% else %}unavailable{% endif %}"
+                        data-date="{{ day.date }}"
+                        data-time="{{ slot.time }}"
+                        onclick="{% if slot.available %}openBookingModal('{{ day.date }}', '{{ slot.time }}'){% endif %}"
+                    >
+                        <span class="time">{{ slot.time }}</span>
+                        <span class="status">
+                            {% if slot.available %}
+                                ✅
+                            {% else %}
+                                🔒
+                            {% endif %}
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно -->
+    <div id="modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h2>Secure Your Spot</h2>
+            <form id="bookingForm">
+                <input type="hidden" id="date-input" name="date">
+                <input type="hidden" id="time-input" name="time_slot">
+                <label>Your Name</label>
+                <input type="text" name="name" required placeholder="Enter your name">
+                <label>Phone Number</label>
+                <input type="tel" name="phone" placeholder="+998 __ ___ __ __" required>
+                <button type="submit">Book Now</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+</body>
+</html>

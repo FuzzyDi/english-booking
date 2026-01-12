@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>My Bookings</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <button class="theme-toggle" id="themeToggle">🌓</button>
+
+    <div class="container" style="max-width: 500px; margin: 100px auto;">
+        <h2>Check Your Bookings</h2>
+        <form method="post">
+            <input type="tel" name="phone" placeholder="+998 __ ___ __ __" required style="width:100%; padding:14px; margin:12px 0; border-radius:12px; border:1px solid #334155; background:var(--card-bg); color:var(--text-primary);">
+            <button type="submit" style="width:100%;">View My Sessions</button>
+        </form>
+        <a href="/" style="display: block; text-align: center; margin-top: 20px; color: var(--accent); text-decoration: none;">← Back to Schedule</a>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+</body>
+</html>

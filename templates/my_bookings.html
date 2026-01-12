@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>My Bookings</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <button class="theme-toggle" id="themeToggle">🌓</button>
+
+    <div class="container" style="max-width: 600px; margin: 0 auto; padding-top: 60px;">
+        <h1>My Bookings</h1>
+        <p>Phone: {{ phone }}</p>
+
+        {% if bookings %}
+            {% for b in bookings %}
+            <div class="booking">
+                <div>
+                    <div>{{ b[1] }} — {{ b[2] }}</div>
+                    <div class="status {% if b[3] == 'confirmed' %}confirmed{% elif b[3] == 'cancelled' %}cancelled{% endif %}">
+                        {{ b[3].title() }}
+                    </div>
+                </div>
+                {% if b[3] == 'confirmed' %}
+                <form method="post" action="/cancel/{{ b[0] }}" style="margin: 0;">
+                    <button type="submit" class="btn">Request Cancel</button>
+                </form>
+                {% elif b[3] == 'pending_cancellation' %}
+                <span style="color: #f15bb5;">Cancellation requested</span>
+                {% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+            <p>No upcoming bookings.</p>
+        {% endif %}
+
+        <a href="/" style="display: block; text-align: center; margin-top: 30px; color: var(--accent); text-decoration: none;">← Back to Schedule</a>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+</body>
+</html>

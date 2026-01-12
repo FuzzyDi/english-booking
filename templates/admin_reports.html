@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Weekly Report</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .report-card { 
+            background: var(--bg-secondary); 
+            padding: 20px; 
+            border-radius: 16px; 
+            margin-bottom: 20px; 
+            border: 1px solid var(--border-color);
+        }
+        .metric { 
+            font-size: 2em; 
+            font-weight: bold; 
+            color: var(--accent); 
+            margin: 10px 0; 
+        }
+        .chart-bar { 
+            height: 24px; 
+            background: var(--unavailable-bg); 
+            border-radius: 12px; 
+            margin: 8px 0; 
+            position: relative; 
+            overflow: hidden;
+        }
+        .chart-fill { 
+            height: 100%; 
+            background: linear-gradient(90deg, var(--accent), var(--accent-hover)); 
+            border-radius: 12px; 
+        }
+        .top-student { 
+            display: flex; 
+            justify-content: space-between; 
+            padding: 8px 0; 
+            border-bottom: 1px solid #334155; 
+        }
+    </style>
+</head>
+<body>
+    <div class="container" style="max-width: 800px; margin: 0 auto; padding: 20px;">
+        <button class="theme-toggle" id="themeToggle">🌓</button>
+        <h1>Weekly Report ({{ week_start }} – {{ week_end }})</h1>
+        <a href="/admin" style="color: var(--accent);">← Back to Admin</a>
+
+        <div class="report-card">
+            <h2>📊 Weekly Load</h2>
+            <div>Total slots: {{ total_slots }}</div>
+            <div>Booked: {{ booked }} ({{ load_percent }}%)</div>
+            <div class="metric">{{ load_percent }}%</div>
+        </div>
+
+        <div class="report-card">
+            <h2>📈 Load by Day</h2>
+            {% for item in load_by_day %}
+            <div>{{ item.day }}: {{ item.count }}/{{ SLOTS|length }} ({{ item.percent }}%)</div>
+            <div class="chart-bar">
+                <div class="chart-fill" style="width: {{ item.percent }}%"></div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="report-card">
+            <h2>👥 Top Students (All Time)</h2>
+            {% for name, phone, cnt in top_students %}
+            <div class="top-student">
+                <span>{{ name }} ({{ phone[:4] }}****{{ phone[-3:] }})</span>
+                <span>{{ cnt }} sessions</span>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="report-card">
+            <h2>✅ Attendance</h2>
+            <div>Present: {{ present }}</div>
+            <div>Absent: {{ absent }}</div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+</body>
+</html>
