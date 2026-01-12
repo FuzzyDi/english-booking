@@ -225,7 +225,7 @@ def cancel_booking(booking_id):
 @app.route('/admin', methods=['GET', 'POST'])
 def admin():
     if request.method == 'POST':
-        if request.form.get('password') == 'teacher123':
+        if request.form.get('password') == 'adasiniqizi':
             session['admin'] = True
         else:
             return "Invalid password", 403
