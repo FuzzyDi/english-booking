@@ -1,11 +1,8 @@
-from flask import Flask, render_template, request, redirect, url_for, session, make_response
 import os
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from flask import Flask, render_template, request, redirect, url_for, session, make_response
 from datetime import datetime, timedelta, date
-from io import BytesIO
-from flask import send_file
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'
@@ -16,38 +13,51 @@ SLOTS = [
     "18:00-18:30", "18:30-19:00", "19:00-19:30", "19:30-20:00"
 ]
 
-def get_db():
-    conn = sqlite3.connect('database.db')
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+def get_db_connection():
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        raise Exception("DATABASE_URL environment variable is required")
+    return psycopg2.connect(db_url, cursor_factory=RealDictCursor)
 
 def init_db():
-    with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS bookings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                phone TEXT NOT NULL,
-                date DATE NOT NULL,
-                time_slot TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'confirmed',
-                attended INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS availability_override (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE NOT NULL,
-                time_slot TEXT
-            )
-        """)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Таблица бронирований
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bookings (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    date DATE NOT NULL,
+                    time_slot TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'confirmed',
+                    attended INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-        # Ensure 'attended' column exists (for upgrades)
-        cursor = conn.execute("PRAGMA table_info(bookings)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if 'attended' not in columns:
-            conn.execute("ALTER TABLE bookings ADD COLUMN attended INTEGER")
+            # Таблица исключений расписания
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS availability_override (
+                    id SERIAL PRIMARY KEY,
+                    date DATE NOT NULL,
+                    time_slot TEXT
+                )
+            """)
+
+            # Проверка наличия столбца 'attended' (для обновлений)
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='bookings' AND column_name='attended'
+            """)
+            if cur.fetchone() is None:
+                cur.execute("ALTER TABLE bookings ADD COLUMN attended INTEGER")
+
+            conn.commit()
+    finally:
+        conn.close()
 
 def mask_phone(phone):
     if len(phone) >= 7:
@@ -56,21 +66,25 @@ def mask_phone(phone):
 
 def get_current_week_dates():
     today = date.today()
-    if today.weekday() == 6:  # Sunday
+    if today.weekday() == 6:
         start = today + timedelta(days=1)
     else:
         start = today - timedelta(days=today.weekday())
-    return [start + timedelta(days=i) for i in range(6)]  # Mon to Sat
+    return [start + timedelta(days=i) for i in range(6)]
 
 def cleanup_old_bookings():
-    with get_db() as conn:
-        today = date.today()
-        last_sunday = today - timedelta(days=today.weekday() + 1)
-        # Only clean fully resolved bookings
-        conn.execute("""
-            DELETE FROM bookings 
-            WHERE date <= ? AND status IN ('confirmed', 'cancelled')
-        """, (last_sunday.isoformat(),))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            today = date.today()
+            last_sunday = today - timedelta(days=today.weekday() + 1)
+            cur.execute("""
+                DELETE FROM bookings 
+                WHERE date <= %s AND status IN ('confirmed', 'cancelled')
+            """, (last_sunday.isoformat(),))
+            conn.commit()
+    finally:
+        conn.close()
 
 def is_slot_available(target_date, time_slot):
     if target_date.weekday() >= 6:
@@ -78,52 +92,65 @@ def is_slot_available(target_date, time_slot):
     if time_slot not in SLOTS:
         return False
 
-    with get_db() as conn:
-        # Full day disabled?
-        if conn.execute(
-            "SELECT 1 FROM availability_override WHERE date = ? AND time_slot IS NULL",
-            (target_date.isoformat(),)
-        ).fetchone():
-            return False
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Проверка: отключён ли день?
+            cur.execute(
+                "SELECT 1 FROM availability_override WHERE date = %s AND time_slot IS NULL",
+                (target_date.isoformat(),)
+            )
+            if cur.fetchone():
+                return False
 
-        # Specific slot disabled?
-        if conn.execute(
-            "SELECT 1 FROM availability_override WHERE date = ? AND time_slot = ?",
-            (target_date.isoformat(), time_slot)
-        ).fetchone():
-            return False
+            # Проверка: отключён ли слот?
+            cur.execute(
+                "SELECT 1 FROM availability_override WHERE date = %s AND time_slot = %s",
+                (target_date.isoformat(), time_slot)
+            )
+            if cur.fetchone():
+                return False
 
-        # Slot is occupied if there's a confirmed OR pending cancellation booking
-        if conn.execute(
-            """SELECT 1 FROM bookings 
-               WHERE date = ? AND time_slot = ? AND status IN ('confirmed', 'pending_cancellation')""",
-            (target_date.isoformat(), time_slot)
-        ).fetchone():
-            return False
+            # Занят ли слот (confirmed или pending)?
+            cur.execute(
+                """SELECT 1 FROM bookings 
+                   WHERE date = %s AND time_slot = %s AND status IN ('confirmed', 'pending_cancellation')""",
+                (target_date.isoformat(), time_slot)
+            )
+            if cur.fetchone():
+                return False
 
-    return True
+        return True
+    finally:
+        conn.close()
 
 def can_book_client(phone, target_date):
-    with get_db() as conn:
-        # One per day (only count confirmed)
-        if conn.execute(
-            "SELECT 1 FROM bookings WHERE phone = ? AND date = ? AND status = 'confirmed'",
-            (phone, target_date.isoformat())
-        ).fetchone():
-            return False, "You are already booked for this day."
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Один раз в день
+            cur.execute(
+                "SELECT 1 FROM bookings WHERE phone = %s AND date = %s AND status = 'confirmed'",
+                (phone, target_date.isoformat())
+            )
+            if cur.fetchone():
+                return False, "You are already booked for this day."
 
-        # Max 3 per week (only confirmed)
-        monday = target_date - timedelta(days=target_date.weekday())
-        sunday = monday + timedelta(days=6)
-        count = conn.execute(
-            """SELECT COUNT(*) FROM bookings 
-               WHERE phone = ? AND date BETWEEN ? AND ? AND status = 'confirmed'""",
-            (phone, monday.isoformat(), sunday.isoformat())
-        ).fetchone()[0]
-        if count >= 3:
-            return False, "Maximum 3 sessions per week."
+            # Макс. 3 в неделю
+            monday = target_date - timedelta(days=target_date.weekday())
+            sunday = monday + timedelta(days=6)
+            cur.execute(
+                """SELECT COUNT(*) FROM bookings 
+                   WHERE phone = %s AND date BETWEEN %s AND %s AND status = 'confirmed'""",
+                (phone, monday.isoformat(), sunday.isoformat())
+            )
+            count = cur.fetchone()['count']
+            if count >= 3:
+                return False, "Maximum 3 sessions per week."
 
-    return True, ""
+        return True, ""
+    finally:
+        conn.close()
 
 @app.route('/')
 def index():
@@ -167,12 +194,17 @@ def book():
     if not can:
         return msg, 400
 
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO bookings (name, phone, date, time_slot, status)
-               VALUES (?, ?, ?, ?, 'confirmed')""",
-            (name, phone, date_str, time_slot)
-        )
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO bookings (name, phone, date, time_slot, status)
+                   VALUES (%s, %s, %s, %s, 'confirmed')""",
+                (name, phone, date_str, time_slot)
+            )
+            conn.commit()
+    finally:
+        conn.close()
 
     response = make_response(redirect(url_for('success')))
     response.set_cookie('user_phone', phone, max_age=7*24*60*60)
@@ -203,22 +235,31 @@ def my_bookings():
         phone = request.cookies.get('user_phone')
 
     if phone:
-        with get_db() as conn:
-            bookings = conn.execute(
-                """SELECT id, date, time_slot, status FROM bookings 
-                   WHERE phone = ? AND date >= ? ORDER BY date""",
-                (phone, date.today().isoformat())
-            ).fetchall()
-        masked = mask_phone(phone)
-        return render_template('my_bookings.html', bookings=bookings, phone=masked)
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, date, time_slot, status FROM bookings 
+                       WHERE phone = %s AND date >= %s ORDER BY date""",
+                    (phone, date.today().isoformat())
+                )
+                bookings = cur.fetchall()
+            masked = mask_phone(phone)
+            return render_template('my_bookings.html', bookings=bookings, phone=masked)
+        finally:
+            conn.close()
     
     return render_template('check_bookings.html')
 
-# User requests cancellation → status = pending_cancellation
 @app.route('/cancel/<int:booking_id>', methods=['POST'])
 def cancel_booking(booking_id):
-    with get_db() as conn:
-        conn.execute("UPDATE bookings SET status = 'pending_cancellation' WHERE id = ?", (booking_id,))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bookings SET status = 'pending_cancellation' WHERE id = %s", (booking_id,))
+            conn.commit()
+    finally:
+        conn.close()
     return redirect(url_for('my_bookings'))
 
 # === Admin Panel ===
@@ -244,215 +285,253 @@ def admin():
         '''
 
     today = date.today().isoformat()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Сегодняшние записи
+            cur.execute("""
+                SELECT id, name, phone, time_slot, status, attended FROM bookings
+                WHERE date = %s 
+                ORDER BY time_slot
+            """, (today,))
+            today_bookings = cur.fetchall()
 
-    with get_db() as conn:
-        # Сегодняшние записи
-        today_bookings = conn.execute("""
-            SELECT id, name, phone, time_slot, status, attended FROM bookings
-            WHERE date = ? 
-            ORDER BY time_slot
-        """, (today,)).fetchall()
+            # Все записи недели
+            cur.execute("""
+                SELECT id, name, phone, date, time_slot, status, attended FROM bookings
+                WHERE date >= %s ORDER BY date, time_slot
+            """, (date.today().isoformat(),))
+            bookings = cur.fetchall()
 
-        # Все записи текущей недели (как было)
-        bookings = conn.execute("""
-            SELECT id, name, phone, date, time_slot, status, attended FROM bookings
-            WHERE date >= ? ORDER BY date, time_slot
-        """, (date.today().isoformat(),)).fetchall()
+            # Расписание
+            dates = get_current_week_dates()
+            schedule_data = []
+            for d in dates:
+                cur.execute(
+                    "SELECT time_slot FROM availability_override WHERE date = %s",
+                    (d.isoformat(),)
+                )
+                overrides = cur.fetchall()
+                disabled_slots = set(row['time_slot'] for row in overrides if row['time_slot'] is not None)
+                full_day_disabled = any(row['time_slot'] is None for row in overrides)
+                schedule_data.append({
+                    'date': d,
+                    'full_disabled': full_day_disabled,
+                    'disabled_slots': disabled_slots
+                })
 
-        dates = get_current_week_dates()
-        schedule_data = []
-        for d in dates:
-            overrides = conn.execute(
-                "SELECT time_slot FROM availability_override WHERE date = ?",
-                (d.isoformat(),)
-            ).fetchall()
-            disabled_slots = set(row[0] for row in overrides if row[0] is not None)
-            full_day_disabled = any(row[0] is None for row in overrides)
-            schedule_data.append({
-                'date': d,
-                'full_disabled': full_day_disabled,
-                'disabled_slots': disabled_slots
-            })
+        masked_today = []
+        for b in today_bookings:
+            masked_today.append((
+                b['id'], b['name'], mask_phone(b['phone']), b['time_slot'],
+                b['status'], b['attended']
+            ))
 
-    masked_today = []
-    for b in today_bookings:
-        masked_phone = mask_phone(b[2])
-        masked_today.append((b[0], b[1], masked_phone, b[3], b[4], b[5]))
+        masked_bookings = []
+        for b in bookings:
+            masked_bookings.append((
+                b['id'], b['name'], mask_phone(b['phone']), b['date'],
+                b['time_slot'], b['status'], b['attended']
+            ))
 
-    masked_bookings = []
-    for b in bookings:
-        masked_phone = mask_phone(b[2])
-        masked_bookings.append((b[0], b[1], masked_phone, b[3], b[4], b[5], b[6]))
+        return render_template(
+            'admin.html',
+            today_bookings=masked_today,
+            bookings=masked_bookings,
+            schedule_data=schedule_data,
+            slots=SLOTS,
+            today=date.today().strftime('%A, %b %d')
+        )
+    finally:
+        conn.close()
 
-    return render_template(
-        'admin.html',
-        today_bookings=masked_today,
-        bookings=masked_bookings,
-        schedule_data=schedule_data,
-        slots=SLOTS,
-        today=date.today().strftime('%A, %b %d')
-    )
-    
 @app.route('/admin/update_schedule', methods=['POST'])
 def update_schedule():
     if not session.get('admin'):
         return "Access denied", 403
 
-    with get_db() as conn:
-        conn.execute("DELETE FROM availability_override")
-        for key, value in request.form.items():
-            if key.startswith('disable_'):
-                parts = key.replace('disable_', '').split('_')
-                if len(parts) == 1:
-                    conn.execute("INSERT INTO availability_override (date, time_slot) VALUES (?, NULL)", (parts[0],))
-                elif len(parts) == 2:
-                    conn.execute("INSERT INTO availability_override (date, time_slot) VALUES (?, ?)", (parts[0], parts[1]))
-    return redirect(url_for('admin'))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM availability_override")
+            for key, value in request.form.items():
+                if key.startswith('disable_'):
+                    parts = key.replace('disable_', '').split('_')
+                    if len(parts) == 1:
+                        cur.execute("INSERT INTO availability_override (date, time_slot) VALUES (%s, NULL)", (parts[0],))
+                    elif len(parts) == 2:
+                        cur.execute("INSERT INTO availability_override (date, time_slot) VALUES (%s, %s)", (parts[0], parts[1]))
+            conn.commit()
+        return redirect(url_for('admin'))
+    finally:
+        conn.close()
 
 @app.route('/admin/set_attendance/<int:booking_id>/<int:status>', methods=['POST'])
 def set_attendance(booking_id, status):
     if not session.get('admin'):
         return "Access denied", 403
-    with get_db() as conn:
-        conn.execute("UPDATE bookings SET attended = ? WHERE id = ?", (status, booking_id))
-    return redirect(url_for('admin'))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bookings SET attended = %s WHERE id = %s", (status, booking_id))
+            conn.commit()
+        return redirect(url_for('admin'))
+    finally:
+        conn.close()
 
 @app.route('/admin/approve_cancel/<int:booking_id>', methods=['POST'])
 def approve_cancel(booking_id):
     if not session.get('admin'):
         return "Access denied", 403
-    with get_db() as conn:
-        conn.execute("UPDATE bookings SET status = 'cancelled' WHERE id = ?", (booking_id,))
-    return redirect(url_for('admin'))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bookings SET status = 'cancelled' WHERE id = %s", (booking_id,))
+            conn.commit()
+        return redirect(url_for('admin'))
+    finally:
+        conn.close()
 
 @app.route('/admin/reject_cancel/<int:booking_id>', methods=['POST'])
 def reject_cancel(booking_id):
     if not session.get('admin'):
         return "Access denied", 403
-    with get_db() as conn:
-        conn.execute("UPDATE bookings SET status = 'confirmed' WHERE id = ?", (booking_id,))
-    return redirect(url_for('admin'))
-
-@app.route('/admin/reports')
-def admin_reports():
-    if not session.get('admin'):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE bookings SET status = 'confirmed' WHERE id = %s", (booking_id,))
+            conn.commit()
         return redirect(url_for('admin'))
-
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_end = week_start + timedelta(days=6)
-
-    with get_db() as conn:
-        # Total slots this week (Mon-Sat)
-        total_slots = 6 * len(SLOTS)  # 6 days * 12 slots
-
-        # Booked slots (confirmed + pending)
-        booked = conn.execute("""
-            SELECT COUNT(*) FROM bookings 
-            WHERE date BETWEEN ? AND ? AND status IN ('confirmed', 'pending_cancellation')
-        """, (week_start.isoformat(), week_end.isoformat())).fetchone()[0]
-
-        # Attendance stats
-        present = conn.execute("SELECT COUNT(*) FROM bookings WHERE attended = 1").fetchone()[0]
-        absent = conn.execute("SELECT COUNT(*) FROM bookings WHERE attended = 0").fetchone()[0]
-
-        # Top students
-        top_students = conn.execute("""
-            SELECT name, phone, COUNT(*) as cnt 
-            FROM bookings 
-            GROUP BY phone 
-            ORDER BY cnt DESC 
-            LIMIT 5
-        """).fetchall()
-
-        # Load by day
-        load_by_day = []
-        for i in range(6):  # Mon=0 ... Sat=5
-            d = week_start + timedelta(days=i)
-            cnt = conn.execute("""
-                SELECT COUNT(*) FROM bookings 
-                WHERE date = ? AND status IN ('confirmed', 'pending_cancellation')
-            """, (d.isoformat(),)).fetchone()[0]
-            load_by_day.append({
-                'day': d.strftime('%A'),
-                'count': cnt,
-                'percent': round(cnt / len(SLOTS) * 100)
-            })
-
-    return render_template('admin_reports.html',
-        total_slots=total_slots,
-        booked=booked,
-        load_percent=round(booked / total_slots * 100),
-        present=present,
-        absent=absent,
-        top_students=top_students,
-        load_by_day=load_by_day,
-        week_start=week_start.strftime('%b %d'),
-        week_end=week_end.strftime('%b %d')
-    )
-
+    finally:
+        conn.close()
 
 @app.route('/admin/export_excel')
 def export_excel():
     if not session.get('admin'):
         return "Access denied", 403
 
-    with get_db() as conn:
-        records = conn.execute("""
-            SELECT name, phone, date, time_slot, status, 
-                   CASE WHEN attended = 1 THEN 'Present'
-                        WHEN attended = 0 THEN 'Absent'
-                        ELSE 'Not marked' END as attendance
-            FROM bookings
-            WHERE date >= ?
-            ORDER BY date, time_slot
-        """, (date.today().isoformat(),)).fetchall()
+    from io import BytesIO
+    from flask import send_file
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
 
-    # Создаём Excel
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Bookings Report"
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT name, phone, date, time_slot, status,
+                       CASE WHEN attended = 1 THEN 'Present'
+                            WHEN attended = 0 THEN 'Absent'
+                            ELSE 'Not marked' END as attendance
+                FROM bookings
+                WHERE date >= %s
+                ORDER BY date, time_slot
+            """, (date.today().isoformat(),))
+            records = cur.fetchall()
 
-    # Заголовки
-    headers = ["Name", "Phone", "Date", "Time Slot", "Status", "Attendance"]
-    ws.append(headers)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Bookings Report"
 
-    # Стили заголовков
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
-    for col in range(1, len(headers) + 1):
-        ws.cell(row=1, column=col).font = header_font
-        ws.cell(row=1, column=col).fill = header_fill
-        ws.cell(row=1, column=col).alignment = Alignment(horizontal="center")
+        headers = ["Name", "Phone", "Date", "Time Slot", "Status", "Attendance"]
+        ws.append(headers)
 
-    # Данные
-    for row in records:
-        ws.append(row)
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+        for col in range(1, len(headers) + 1):
+            ws.cell(row=1, column=col).font = header_font
+            ws.cell(row=1, column=col).fill = header_fill
+            ws.cell(row=1, column=col).alignment = Alignment(horizontal="center")
 
-    # Автоширина колонок
-    for col in ws.columns:
-        max_length = 0
-        column = col[0].column_letter
-        for cell in col:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
-            except:
-                pass
-        adjusted_width = min(max_length + 2, 30)
-        ws.column_dimensions[column].width = adjusted_width
+        for row in records:
+            ws.append([row['name'], row['phone'], row['date'], row['time_slot'], row['status'], row['attendance']])
 
-    # Сохраняем в память
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
+        for col in ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 30)
+            ws.column_dimensions[column].width = adjusted_width
 
-    return send_file(
-        output,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        as_attachment=True,
-        download_name='english_bookings_report.xlsx'
-    )
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name='english_bookings_report.xlsx'
+        )
+    finally:
+        conn.close()
+
+@app.route('/admin/reports')
+def admin_reports():
+    if not session.get('admin'):
+        return redirect(url_for('admin'))
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            today = date.today()
+            week_start = today - timedelta(days=today.weekday())
+            week_end = week_start + timedelta(days=6)
+
+            total_slots = 6 * len(SLOTS)
+            cur.execute("""
+                SELECT COUNT(*) as cnt FROM bookings 
+                WHERE date BETWEEN %s AND %s AND status IN ('confirmed', 'pending_cancellation')
+            """, (week_start.isoformat(), week_end.isoformat()))
+            booked = cur.fetchone()['cnt']
+
+            cur.execute("SELECT COUNT(*) as cnt FROM bookings WHERE attended = 1")
+            present = cur.fetchone()['cnt']
+
+            cur.execute("SELECT COUNT(*) as cnt FROM bookings WHERE attended = 0")
+            absent = cur.fetchone()['cnt']
+
+            cur.execute("""
+                SELECT name, phone, COUNT(*) as cnt 
+                FROM bookings 
+                GROUP BY phone, name
+                ORDER BY cnt DESC 
+                LIMIT 5
+            """)
+            top_students = cur.fetchall()
+
+            load_by_day = []
+            for i in range(6):
+                d = week_start + timedelta(days=i)
+                cur.execute("""
+                    SELECT COUNT(*) as cnt FROM bookings 
+                    WHERE date = %s AND status IN ('confirmed', 'pending_cancellation')
+                """, (d.isoformat(),))
+                cnt = cur.fetchone()['cnt']
+                load_by_day.append({
+                    'day': d.strftime('%A'),
+                    'count': cnt,
+                    'percent': round(cnt / len(SLOTS) * 100)
+                })
+
+        return render_template('admin_reports.html',
+            total_slots=total_slots,
+            booked=booked,
+            load_percent=round(booked / total_slots * 100),
+            present=present,
+            absent=absent,
+            top_students=top_students,
+            load_by_day=load_by_day,
+            week_start=week_start.strftime('%b %d'),
+            week_end=week_end.strftime('%b %d')
+        )
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     init_db()
